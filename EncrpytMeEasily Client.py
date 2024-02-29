@@ -1,7 +1,14 @@
 import socket
 import base64
 import hashlib
+import os
+import platform
 from cryptography.fernet import Fernet
+
+def clear_screen():
+    """Clears the console based on the operating system."""
+    command = 'cls' if platform.system() == 'Windows' else 'clear'
+    os.system(command)
 
 def generate_encryption_key(seed_numbers):
     """Generates a Fernet encryption key based on the provided seed numbers."""
@@ -20,40 +27,44 @@ def get_seed_input():
         return list(map(int, seed_input.split()))
 
 def client_program():
-    # Prompt for the server's IP address
-    host = input("Enter the server's IP address: ")
-    port = 5000  # Assuming the port is fixed for simplicity
+    clear_screen()  # Clear the screen at the start
+    host = input("Enter the server's IP address (press Enter for default localhost): ")
+    if not host.strip():
+        host = '127.0.0.1'  # Default to localhost if no input
+    port = 5000
+
+    clear_screen()  # Clear the screen before asking for seed input
 
     seed_numbers = get_seed_input()
     encryption_key = generate_encryption_key(seed_numbers)
     cipher_suite = Fernet(encryption_key)
 
-    client_socket = socket.socket()
-    try:
-        client_socket.connect((host, port))
-        print("Connected to the server.")
+    clear_screen()  # Clear the screen before asking for username
 
-        username = input("Enter your username: ")  # Prompt user for username
+    username = input("Enter your username: ")
+    
+    with socket.socket() as client_socket:
+        client_socket.connect((host, port))
         encrypted_username = cipher_suite.encrypt(username.encode())
         client_socket.send(encrypted_username)
+        print(f"Connected to the server as {username}.")
 
-        while True:
-            message = input("Type your message (type 'bye' to exit): ")  # Message input
-            if message.lower() == 'bye':  # Exit command
-                break
-            encrypted_message = cipher_suite.encrypt(message.encode())
-            client_socket.send(encrypted_message)
+        try:
+            while True:
+                message = input(": ")
+                if message.lower() == 'bye':
+                    break
+                encrypted_message = cipher_suite.encrypt(message.encode())
+                client_socket.send(encrypted_message)
 
-            # Receive and decrypt the server's response
-            response = client_socket.recv(1024)
-            decrypted_response = cipher_suite.decrypt(response).decode()
-            print(decrypted_response)  # Display decrypted response
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        client_socket.close()
-        print("Connection closed.")
+                response = cipher_suite.decrypt(client_socket.recv(1024)).decode()
+                # Check if the message is from the user itself and skip displaying it
+                if not response.startswith(username + ":"):
+                    print(response)
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            print("Connection closed.")
 
 if __name__ == '__main__':
     client_program()
