@@ -2,53 +2,202 @@ import kivy
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
+from kivy.uix.slider import Slider
 from kivy.uix.button import Button
+from kivy.uix.widget import Widget
 from kivy.uix.textinput import TextInput
-from kivy.clock import mainthread
+from kivy.uix.scrollview import ScrollView
+from kivy.effects.scroll import ScrollEffect
+from kivy.factory import Factory
+from kivy.properties import NumericProperty
+from kivy.clock import Clock, mainthread
+from kivy.graphics import Color, Rectangle, Line
+from kivy.core.window import Window
+from kivy.properties import ObjectProperty
 import socket
 import threading
 import hashlib
 import base64
 from cryptography.fernet import Fernet
+from kivy.animation import Animation
+from kivy.metrics import dp
 
 kivy.require('2.0.0')
+
+class NoMomentumScrollEffect(ScrollEffect):
+    def update_velocity(self, dt):
+        self.velocity = 0
+
+Factory.register('NoMomentumScrollEffect', cls=NoMomentumScrollEffect)
+
+
+class CustomScrollView(ScrollView):
+    def __init__(self, **kwargs):
+        super(CustomScrollView, self).__init__(**kwargs)
+        self.effect_cls = 'NoMomentumScrollEffect'
+        self.scroll_type = ['bars', 'content']
+        self.bar_width = 10  # Maintain scroll bar visibility for simplicity
+        Clock.schedule_once(self.check_content_size)  # Ensure we check the content size
+        Clock.schedule_once(self.init_ui)  # UI initialization
+
+    def check_content_size(self, *args):
+        if self.children:  # Check if there is at least one child
+            content = self.children[0]
+            is_content_empty = (content.height <= self.height) or (not content.children)
+            if is_content_empty:
+                self.do_scroll_y = False
+                self.bar_width = 0
+                self.scroll_y = 0
+            else:
+                self.do_scroll_y = True
+                self.bar_width = 10
+
+    def add_widget(self, widget, *args):
+        super(CustomScrollView, self).add_widget(widget, *args)
+        Clock.schedule_once(lambda dt: self.check_content_size())
+
+    def init_ui(self, dt):
+        # Allow vertical scrolling
+        self.do_scroll_y = True
+        with self.canvas.before:
+            Color(rgba=(1, 1, 1, 1))
+            self.border = Line(rectangle=(self.x + 1, self.y + 1, self.width - 2, self.height - 2), width=1.2)
+        self.bind(pos=self.update_border, size=self.update_border)
+
+    def update_border(self, *args):
+        if hasattr(self, 'border'):
+            # Update the border position and size based on the scroll view's current position and size
+            self.border.rectangle = (self.x + 1, self.y + 1, self.width - 2, self.height - 2)
+
+    def on_touch_down(self, touch):
+        if touch.device == 'mouse' and touch.button in ('scrolldown', 'scrollup'):
+            # Invert scrolling direction
+            if touch.button == 'scrolldown':
+                self.scroll_y = min(1, self.scroll_y + 0.1)  # Inverted to scroll up
+            elif touch.button == 'scrollup':
+                self.scroll_y = max(0, self.scroll_y - 0.1)  # Inverted to scroll down
+            Animation(scroll_y=self.scroll_y, d=0.1, t='out_quad').start(self)
+            return True
+        return super(CustomScrollView, self).on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self.collide_point(*touch.pos):
+            if not hasattr(self, 'last_touch_y') or touch.is_mouse_scrolling:
+                self.last_touch_y = touch.y
+            dy = touch.y - self.last_touch_y
+            # Invert scroll direction for touch movement
+            self.scroll_y = min(1, max(0, self.scroll_y - dy / self.height))  # Inverted direction
+            self.last_touch_y = touch.y
+            return True
+        return super(CustomScrollView, self).on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if self.collide_point(*touch.pos) and hasattr(self, 'last_touch_y'):
+            del self.last_touch_y  # Remove the attribute when touch ends
+        return super(CustomScrollView, self).on_touch_up(touch)
 
 class ServerApp(App):
     def build(self):
         self.server = ServerBackend(app=self)
         layout = BoxLayout(orientation='vertical')
 
-        self.info_log = Label(size_hint_y=0.8, markup=True)
-        layout.add_widget(self.info_log)
+        # Header layout
+        header_layout = BoxLayout(size_hint_y=None, height=50)
+        title_label = Label(text='EncryptMeEasily Server 0.103', size_hint_x=0.85)
+        close_button = Button(text='X', size_hint_x=None, width=50)
+        close_button.bind(on_press=lambda x: self.stop())
+        header_layout.add_widget(title_label)
+        header_layout.add_widget(close_button)
+        layout.add_widget(header_layout)
 
-        self.passkey_input = TextInput(size_hint_y=0.1, multiline=False, hint_text='Enter 6-digit passkey and press Enter')
-        self.passkey_input.bind(on_text_validate=self.on_passkey_enter)
-        layout.add_widget(self.passkey_input)
+        # Content layout for log
+        content_layout = BoxLayout(padding=[10], size_hint_y=None)
+        self.info_log = Label(size_hint_y=None, markup=True, halign="left", valign="bottom")
+        self.info_log.bind(
+            width=lambda *x: self.info_log.setter('text_size')(self.info_log, (self.info_log.width, None)),
+            texture_size=lambda *x: self.update_content_layout_height(self.info_log.texture_size[1]))
+        content_layout.add_widget(self.info_log)
 
-        control_layout = BoxLayout(size_hint_y=0.1)
+        # ScrollView for logs
+        log_scroll_view = CustomScrollView(size_hint=(1, None), size=(Window.width, Window.height - 150),
+                                           do_scroll_x=False)
+        log_scroll_view.add_widget(content_layout)
+        layout.add_widget(log_scroll_view)
+
+        # Command input layout
+        command_input_layout = BoxLayout(size_hint_y=None, height=50, padding=[10])
+        with command_input_layout.canvas.before:
+            Color(rgba=(0.3, 0.3, 0.3, 1))
+            Rectangle(size=(Window.width, 50), pos=command_input_layout.pos)
+        self.passkey_input = TextInput(multiline=False, hint_text='Enter passkey (4-16 digits)...')
+        self.passkey_input.bind(on_text_validate=self.on_passkey_enter)  # Correctly bind the event
+        command_input_layout.add_widget(self.passkey_input)
+        layout.add_widget(command_input_layout)
+
+        # Control buttons layout
+        control_layout = BoxLayout(size_hint_y=None, height=50)
+
+        # Start Server button
         start_button = Button(text='Start Server')
-        start_button.bind(on_press=self.start_server)
+        start_button.bind(on_press=self.start_server)  # Assuming start_server method is defined elsewhere
         control_layout.add_widget(start_button)
 
+        # Stop Server button
         stop_button = Button(text='Stop Server')
-        stop_button.bind(on_press=self.stop_server)
+        stop_button.bind(on_press=self.stop_server)  # Assuming stop_server method is defined elsewhere
         control_layout.add_widget(stop_button)
+
+        # Kick All & Clear Log button
+        kick_button = Button(text='Kick All & Clear Log')
+        kick_button.bind(
+            on_press=self.kick_all_and_clear_log)  # Assuming kick_all_and_clear_log method is defined elsewhere
+        control_layout.add_widget(kick_button)
 
         layout.add_widget(control_layout)
 
         return layout
+
+    def update_content_layout_height(self, height):
+        """Update the height of the content layout to ensure it can scroll."""
+        self.info_log.height = height  # Update the label height
+        self.info_log.size_hint_y = None  # This allows the label to grow
+        content_layout = self.info_log.parent  # Get the content layout
+        if content_layout:
+            content_layout.height = height + 20  # Add padding to height; adjust as needed
+
+    def update_separator(self, instance, value):
+        if hasattr(self, 'separator'):
+            self.separator.pos = (instance.x, instance.y)
+            self.separator.size = (instance.width, 1)
+
+    def on_passkey_enter(self, instance):
+        passkey = self.passkey_input.text
+        if not passkey:
+            passkey = '1234567812345678'
+            self.server.generate_encryption_key([int(digit) for digit in passkey])
+            self.update_info_log('Default passkey set. You can start the server now.')
+        elif 4 <= len(passkey) <= 16 and passkey.isdigit():
+            self.server.generate_encryption_key([int(digit) for digit in passkey])
+            self.update_info_log('Passkey set. You can start the server now.')
+        else:
+            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits.')
+        self.passkey_input.text = ''
 
     @mainthread
     def update_info_log(self, message):
         self.info_log.text += f"\n{message}"
 
     def on_passkey_enter(self, instance):
-        passkey = self.passkey_input.text
-        if len(passkey) == 6 and passkey.isdigit():
-            self.server.generate_encryption_key([int(digit) for digit in passkey])
+        passkey = self.passkey_input.text.strip()
+        if not passkey:
+            passkey = '1234567812345678'
+            self.update_info_log('Default passkey set. You can start the server now.')
+        elif 4 <= len(passkey) <= 16 and passkey.isdigit():
             self.update_info_log('Passkey set. You can start the server now.')
         else:
-            self.update_info_log('Invalid passkey. Please enter a 6-digit number.')
+            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits.')
+
+        self.server.generate_encryption_key([int(digit) for digit in passkey if digit.isdigit()])
         self.passkey_input.text = ''
 
     def start_server(self, instance):
@@ -57,12 +206,22 @@ class ServerApp(App):
     def stop_server(self, instance):
         self.server.stop_server()
 
+    def kick_all_and_clear_log(self, instance):
+        self.server.kick_all_clients()
+        self.clear_logs()
+
+    def clear_logs(self):
+        self.info_log.text = ''
+
+    def on_stop(self):
+        self.server.stop_server()
+
 class ServerBackend:
     def __init__(self, app):
         self.app = app
         self.server_socket = None
         self.is_active = False
-        self.clients = []  # Keep track of client sockets
+        self.clients = []
         self.encryption_key = None
         self.cipher_suite = None
 
@@ -70,7 +229,7 @@ class ServerBackend:
         seed_string = ''.join(map(str, seed_numbers))
         hasher = hashlib.sha256()
         hasher.update(seed_string.encode('utf-8'))
-        key = base64.urlsafe_b64encode(hasher.digest()[:32])  # Ensure key is 32 bytes
+        key = base64.urlsafe_b64encode(hasher.digest()[:32])
         self.encryption_key = key
         self.cipher_suite = Fernet(key)
         self.app.update_info_log('Encryption key generated.')
@@ -88,27 +247,20 @@ class ServerBackend:
         self.server_socket.bind(('0.0.0.0', 5000))
         self.server_socket.listen(5)
         self.app.update_info_log("Server started... Listening for connections...")
-        threading.Thread(target=self.accept_connections).start()
+        threading.Thread(target=self.accept_connections, daemon=True).start()
 
     def accept_connections(self):
         while self.is_active:
             try:
                 client_socket, address = self.server_socket.accept()
                 self.app.update_info_log(f"Connection established with {address}")
-                client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address))
+                client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address), daemon=True)
                 client_thread.start()
                 self.clients.append(client_socket)
             except Exception as e:
-                self.app.update_info_log(f"Server stopped listening: {e}")
-                self.is_active = False
-
-    def broadcast(self, message):
-        for client in self.clients:
-            try:
-                client.send(message)
-            except Exception as e:
-                self.app.update_info_log(f"Broadcast error to {client.getpeername()}: {e}")
-                self.clients.remove(client)
+                if self.is_active:
+                    self.app.update_info_log(f"Server stopped listening: {e}")
+                break
 
     def handle_client(self, client_socket, address):
         try:
@@ -116,10 +268,8 @@ class ServerBackend:
                 data = client_socket.recv(1024)
                 if not data:
                     break
-                # Assuming `self.cipher_suite` is already set up with the encryption key
                 decrypted_data = self.cipher_suite.decrypt(data).decode('utf-8')
                 self.app.update_info_log(f"Message from {address}: {decrypted_data}")
-                # Encrypt the message again for broadcasting
                 broadcast_encrypted = self.cipher_suite.encrypt(decrypted_data.encode('utf-8'))
                 self.broadcast(broadcast_encrypted)
         except Exception as e:
@@ -129,13 +279,34 @@ class ServerBackend:
             self.clients.remove(client_socket)
             self.app.update_info_log(f"Connection with {address} closed.")
 
+    def broadcast(self, message):
+        for client in self.clients:
+            try:
+                client.send(message)
+            except Exception as e:
+                self.app.update_info_log(f"Broadcast error to {client.getpeername()}: {e}")
+                self.clients.remove(client)
+
     def stop_server(self):
         if self.is_active:
             self.is_active = False
-            for client in self.clients:
-                client.close()
             self.server_socket.close()
             self.app.update_info_log("Server stopped.")
+            for client in self.clients:  # Corrected here
+                try:
+                    client.close()
+                except Exception as e:
+                    pass  # Optionally log this exception
+            self.clients.clear()
+
+    def kick_all_clients(self):
+        for client in self.clients[:]:  # Corrected here
+            try:
+                client.close()
+            except Exception as e:
+                self.app.update_info_log(f"Error disconnecting {client.getpeername()}: {e}")
+            self.clients.remove(client)
+        self.app.update_info_log("")
 
 if __name__ == '__main__':
     ServerApp().run()
