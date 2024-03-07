@@ -30,43 +30,37 @@ class NoMomentumScrollEffect(ScrollEffect):
 
 Factory.register('NoMomentumScrollEffect', cls=NoMomentumScrollEffect)
 
-
 class CustomScrollView(ScrollView):
     def __init__(self, **kwargs):
         super(CustomScrollView, self).__init__(**kwargs)
-        self.effect_cls = 'NoMomentumScrollEffect'
+        self.effect_cls = 'NoMomentumScrollEffect'  # Remove momentum for scrolling
         self.scroll_type = ['bars', 'content']
-        self.bar_width = 10  # Maintain scroll bar visibility for simplicity
-        Clock.schedule_once(self.check_content_size)  # Ensure we check the content size
-        Clock.schedule_once(self.init_ui)  # UI initialization
+        # Initial bar width can be set to 0 and adjusted dynamically based on content
+        self.bar_width = 0
+        Clock.schedule_once(self.check_content_size)
+        Clock.schedule_once(self.init_ui)
+        self.bind(size=self.check_content_size)  # Recheck when ScrollView size changes
 
     def check_content_size(self, *args):
-        if self.children:  # Check if there is at least one child
+        if self.children:
             content = self.children[0]
-            is_content_empty = (content.height <= self.height) or (not content.children)
-            if is_content_empty:
-                self.do_scroll_y = False
-                self.bar_width = 0
-                self.scroll_y = 0
-            else:
+            # Enable scrolling and show scrollbar if content height exceeds view height
+            if content.height > self.height:
                 self.do_scroll_y = True
-                self.bar_width = 10
-
-    def add_widget(self, widget, *args):
-        super(CustomScrollView, self).add_widget(widget, *args)
-        Clock.schedule_once(lambda dt: self.check_content_size())
+                self.bar_width = 10  # Show scrollbar by setting a non-zero width
+            else:
+                self.do_scroll_y = False
+                self.bar_width = 0  # Hide scrollbar by setting width to 0
 
     def init_ui(self, dt):
-        # Allow vertical scrolling
-        self.do_scroll_y = True
+        self.do_scroll_y = True  # Enable vertical scrolling
         with self.canvas.before:
-            Color(rgba=(1, 1, 1, 1))
+            Color(rgba=(1, 1, 1, 1))  # Background color for the scrollbar area, adjust as needed
             self.border = Line(rectangle=(self.x + 1, self.y + 1, self.width - 2, self.height - 2), width=1.2)
         self.bind(pos=self.update_border, size=self.update_border)
 
     def update_border(self, *args):
         if hasattr(self, 'border'):
-            # Update the border position and size based on the scroll view's current position and size
             self.border.rectangle = (self.x + 1, self.y + 1, self.width - 2, self.height - 2)
 
     def on_touch_down(self, touch):
@@ -85,8 +79,8 @@ class CustomScrollView(ScrollView):
             if not hasattr(self, 'last_touch_y') or touch.is_mouse_scrolling:
                 self.last_touch_y = touch.y
             dy = touch.y - self.last_touch_y
-            # Invert scroll direction for touch movement
-            self.scroll_y = min(1, max(0, self.scroll_y - dy / self.height))  # Inverted direction
+            # Invert scroll direction by changing `- dy / self.height` to `+ dy / self.height`
+            self.scroll_y = min(1, max(0, self.scroll_y + dy / self.height))
             self.last_touch_y = touch.y
             return True
         return super(CustomScrollView, self).on_touch_move(touch)
@@ -96,6 +90,12 @@ class CustomScrollView(ScrollView):
             del self.last_touch_y  # Remove the attribute when touch ends
         return super(CustomScrollView, self).on_touch_up(touch)
 
+def update_content_layout_height(self):
+    content_layout = self.ids.content_layout  # Assuming you have given an id to your content layout in kv
+    total_height = sum(child.height + content_layout.spacing for child in content_layout.children)
+    content_layout.height = total_height
+    content_layout.size_hint_y = None  # Allow manual height adjustment
+
 class ServerApp(App):
     def build(self):
         self.server = ServerBackend(app=self)
@@ -103,12 +103,23 @@ class ServerApp(App):
 
         # Header layout
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Server 0.103', size_hint_x=0.85)
+        title_label = Label(text='EncryptMeEasily Server 0.103', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
         header_layout.add_widget(close_button)
         layout.add_widget(header_layout)
+
+        # Ensure dynamic resizing for the rectangle background (if necessary)
+        command_input_layout = BoxLayout(size_hint_y=None, height=50, padding=[10])
+        self.update_background = lambda *args: command_input_layout.canvas.before.clear()
+
+        with command_input_layout.canvas.before:
+            self.update_background()
+            Color(rgba=(0.3, 0.3, 0.3, 1))
+            Rectangle(size=(Window.width, 50), pos=command_input_layout.pos)
+
+        Window.bind(on_resize=self.handle_window_resize)
 
         # Content layout for log
         content_layout = BoxLayout(padding=[10], size_hint_y=None)
@@ -119,8 +130,7 @@ class ServerApp(App):
         content_layout.add_widget(self.info_log)
 
         # ScrollView for logs
-        log_scroll_view = CustomScrollView(size_hint=(1, None), size=(Window.width, Window.height - 150),
-                                           do_scroll_x=False)
+        log_scroll_view = CustomScrollView(size_hint=(1, 1), do_scroll_x=False)
         log_scroll_view.add_widget(content_layout)
         layout.add_widget(log_scroll_view)
 
@@ -129,7 +139,7 @@ class ServerApp(App):
         with command_input_layout.canvas.before:
             Color(rgba=(0.3, 0.3, 0.3, 1))
             Rectangle(size=(Window.width, 50), pos=command_input_layout.pos)
-        self.passkey_input = TextInput(multiline=False, hint_text='Enter passkey (4-16 digits)...')
+        self.passkey_input = TextInput(multiline=False, hint_text='Enter passkey (4-16 digits) or press enter for the default test key.')
         self.passkey_input.bind(on_text_validate=self.on_passkey_enter)  # Correctly bind the event
         command_input_layout.add_widget(self.passkey_input)
         layout.add_widget(command_input_layout)
@@ -157,6 +167,10 @@ class ServerApp(App):
 
         return layout
 
+    def handle_window_resize(self, instance, width, height):
+        # Handle resizing logic here, for example:
+        self.update_background()
+
     def update_content_layout_height(self, height):
         """Update the height of the content layout to ensure it can scroll."""
         self.info_log.height = height  # Update the label height
@@ -175,12 +189,12 @@ class ServerApp(App):
         if not passkey:
             passkey = '1234567812345678'
             self.server.generate_encryption_key([int(digit) for digit in passkey])
-            self.update_info_log('Default passkey set. You can start the server now.')
+            self.update_info_log('Default passkey set. You can start the server now thank you.')
         elif 4 <= len(passkey) <= 16 and passkey.isdigit():
             self.server.generate_encryption_key([int(digit) for digit in passkey])
-            self.update_info_log('Passkey set. You can start the server now.')
+            self.update_info_log('Passkey set. You can start the server now thank you.')
         else:
-            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits.')
+            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits please.')
         self.passkey_input.text = ''
 
     @mainthread
@@ -188,14 +202,17 @@ class ServerApp(App):
         self.info_log.text += f"\n{message}"
 
     def on_passkey_enter(self, instance):
-        passkey = self.passkey_input.text.strip()
+        passkey = self.passkey_input.text
         if not passkey:
             passkey = '1234567812345678'
-            self.update_info_log('Default passkey set. You can start the server now.')
+            self.server.generate_encryption_key([int(digit) for digit in passkey])
+            self.update_info_log('Default passkey set. You can start the server now thank you.')
         elif 4 <= len(passkey) <= 16 and passkey.isdigit():
-            self.update_info_log('Passkey set. You can start the server now.')
+            self.server.generate_encryption_key([int(digit) for digit in passkey])
+            self.update_info_log('Passkey set. You can start the server now thank you.')
         else:
-            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits.')
+            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits please.')
+        self.passkey_input.text = ''
 
         self.server.generate_encryption_key([int(digit) for digit in passkey if digit.isdigit()])
         self.passkey_input.text = ''
