@@ -103,7 +103,7 @@ class ServerApp(App):
 
         # Header layout
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Server 0.103', size_hint_x=0.95)
+        title_label = Label(text='EncryptMeEasily Server 0.104', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
@@ -184,19 +184,6 @@ class ServerApp(App):
             self.separator.pos = (instance.x, instance.y)
             self.separator.size = (instance.width, 1)
 
-    def on_passkey_enter(self, instance):
-        passkey = self.passkey_input.text
-        if not passkey:
-            passkey = '1234567812345678'
-            self.server.generate_encryption_key([int(digit) for digit in passkey])
-            self.update_info_log('Default passkey set. You can start the server now thank you.')
-        elif 4 <= len(passkey) <= 16 and passkey.isdigit():
-            self.server.generate_encryption_key([int(digit) for digit in passkey])
-            self.update_info_log('Passkey set. You can start the server now thank you.')
-        else:
-            self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits please.')
-        self.passkey_input.text = ''
-
     @mainthread
     def update_info_log(self, message):
         self.info_log.text += f"\n{message}"
@@ -212,9 +199,6 @@ class ServerApp(App):
             self.update_info_log('Passkey set. You can start the server now thank you.')
         else:
             self.update_info_log('Invalid passkey. Please enter a number between 4 and 16 digits please.')
-        self.passkey_input.text = ''
-
-        self.server.generate_encryption_key([int(digit) for digit in passkey if digit.isdigit()])
         self.passkey_input.text = ''
 
     def start_server(self, instance):
@@ -281,20 +265,25 @@ class ServerBackend:
 
     def handle_client(self, client_socket, address):
         try:
+            # Receive and decrypt the username
+            encrypted_username = client_socket.recv(1024)
+            username = self.cipher_suite.decrypt(encrypted_username).decode('utf-8')
+            self.app.update_info_log(f"{username} connected from {address}.")
+
+            # Continue with normal message handling
             while True:
-                data = client_socket.recv(1024)
-                if not data:
+                encrypted_message = client_socket.recv(1024)
+                if not encrypted_message:
                     break
-                decrypted_data = self.cipher_suite.decrypt(data).decode('utf-8')
-                self.app.update_info_log(f"Message from {address}: {decrypted_data}")
-                broadcast_encrypted = self.cipher_suite.encrypt(decrypted_data.encode('utf-8'))
-                self.broadcast(broadcast_encrypted)
+                message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
+                self.app.update_info_log(f"Message from {username}: {message}")
+                # Broadcasting logic here...
         except Exception as e:
             self.app.update_info_log(f"Error with client {address}: {e}")
         finally:
             client_socket.close()
             self.clients.remove(client_socket)
-            self.app.update_info_log(f"Connection with {address} closed.")
+            self.app.update_info_log(f"{username} has disconnected.")
 
     def broadcast(self, message):
         for client in self.clients:
