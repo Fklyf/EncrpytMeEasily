@@ -21,9 +21,10 @@ import base64
 from cryptography.fernet import Fernet
 from kivy.animation import Animation
 from kivy.metrics import dp
+from kivy.config import Config
+Config.set('kivy', 'keyboard_mode', 'systemanddock')
 
 kivy.require('2.0.0')
-
 
 class NoMomentumScrollEffect(ScrollEffect):
     def update_velocity(self, dt):
@@ -98,40 +99,33 @@ class CustomScrollView(ScrollView):
         content_layout.height = total_height
         content_layout.size_hint_y = None  # Allow manual height adjustment
 
+
 class ClientApp(App):
+    def __init__(self, **kwargs):
+        super(ClientApp, self).__init__(**kwargs)
+        self.setup_stage = 'username'  # First stage is to enter a username
+        self.client_socket = None  # Initialize client_socket
+
     def build(self):
         self.server_address = '127.0.0.1'
         self.server_port = 5000
-        self.encryption_key = self.generate_encryption_key('defaultkey123')
+        self.encryption_key = self.generate_encryption_key('1234567812345678')
         self.cipher_suite = Fernet(self.encryption_key)
 
         layout = BoxLayout(orientation='vertical')
 
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Client 0.103', size_hint_x=0.95)
+        title_label = Label(text='EncryptMeEasily Client 0.104', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
         header_layout.add_widget(close_button)
         layout.add_widget(header_layout)
 
-        # Ensure dynamic resizing for the rectangle background (if necessary)
-        command_input_layout = BoxLayout(size_hint_y=None, height=50, padding=[10])
-        self.update_background = lambda *args: command_input_layout.canvas.before.clear()
-
-        with command_input_layout.canvas.before:
-            self.update_background()
-            Color(rgba=(0.3, 0.3, 0.3, 1))
-            Rectangle(size=(Window.width, 50), pos=command_input_layout.pos)
-
-        Window.bind(on_resize=self.handle_window_resize)
-
         # Content layout for log
-        content_layout = BoxLayout(padding=[10], size_hint_y=None)
-        self.info_log = Label(size_hint_y=None, markup=True, halign="left", valign="bottom")
-        self.info_log.bind(
-            width=lambda *x: self.info_log.setter('text_size')(self.info_log, (self.info_log.width, None)),
-            texture_size=lambda *x: self.update_content_layout_height(self.info_log.texture_size[1]))
+        content_layout = BoxLayout(padding=[1], size_hint_y=None)
+        self.info_log = Label(size_hint_y=None, markup=True, halign="left",
+                              valign="bottom")  # Ensure this is initialized
         content_layout.add_widget(self.info_log)
 
         # ScrollView for logs
@@ -139,17 +133,32 @@ class ClientApp(App):
         log_scroll_view.add_widget(content_layout)
         layout.add_widget(log_scroll_view)
 
-        # Command input layout
+        # Command input layout with new reset button
         command_input_layout = BoxLayout(size_hint_y=None, height=50, padding=[10])
-        with command_input_layout.canvas.before:
-            Color(rgba=(0.0, 0.0, 0.0, 1))
-            Rectangle(size=(Window.width, 50), pos=command_input_layout.pos)
-        self.passkey_input = TextInput(multiline=False, hint_text='Enter passkey (4-16 digits) or press enter for the default test key.')
-        self.passkey_input.bind(on_text_validate=self.on_message_enter)  # Correctly bind the event
+        self.passkey_input = TextInput(multiline=False, hint_text='Please enter a username.')
+        self.passkey_input.bind(on_text_validate=self.on_message_enter)
+
+        # Add a reset button next to the TextInput
+        reset_button = Button(text='New', size_hint_x=None, height=49, width=99)
+        reset_button.bind(on_press=self.restart_process)
         command_input_layout.add_widget(self.passkey_input)
+        command_input_layout.add_widget(reset_button)  # Add the reset button to the layout
+
         layout.add_widget(command_input_layout)
 
         return layout
+
+    def restart_process(self, instance):
+        if self.client_socket:
+            try:
+                self.client_socket.close()  # Attempt to close the socket connection if it exists
+            except Exception as e:
+                print(f"Error closing socket: {e}")
+        self.client_socket = None
+        self.setup_stage = 'username'
+        self.passkey_input.text = ''  # Clear the input box
+        self.passkey_input.hint_text = 'Please enter a username.'  # Reset hint text
+        # Reset other UI elements as necessary, e.g., clear logs or messages
 
     def update_content_layout_height(self, *args):
         if not hasattr(self, 'content_layout'):
@@ -172,25 +181,102 @@ class ClientApp(App):
         return key
 
     def on_message_enter(self, instance):
-        message = instance.text
+        text = instance.text.strip()
+
+        # Handle different setup stages
+        if self.setup_stage == 'username':
+            self.username = text
+            self.setup_stage = 'server_ip'
+            self.passkey_input.hint_text = 'Enter server IP or press Enter for localhost'
+            self.info_log.text += '\nUsername set. Enter server IP or press Enter for localhost.'
+        elif self.setup_stage == 'server_ip':
+            self.server_address = text if text else '127.0.0.1'
+            self.setup_stage = 'connect'
+            self.connect_to_server()
+        elif self.setup_stage == 'connect':
+            self.setup_stage = 'passkey'
+            self.passkey_input.hint_text = 'Enter passkey or press Enter for default'
+            self.info_log.text += '\nConnected to the server. Enter passkey or press Enter for default:'
+        elif self.setup_stage == 'passkey':
+            # Generate encryption key based on the passkey or use the default
+            self.encryption_key = self.generate_encryption_key(text if text else '1234567812345678')
+            self.cipher_suite = Fernet(self.encryption_key)
+            self.setup_stage = 'chat'
+            self.passkey_input.hint_text = 'Enter message'
+            self.send_username()  # Send the username now that we have established a secure channel
+            self.info_log.text += '\nPasskey set. You can now enter messages.'
+        elif self.setup_stage == 'chat':
+            self.send_message(text)
+
+        self.passkey_input.text = ''  # Clear the text input for next input
+
+    def connect_to_server(self):
+        try:
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((self.server_address, self.server_port))
+            self.setup_stage = 'passkey'
+            # Corrected from self.input_field to self.passkey_input
+            self.passkey_input.hint_text = 'Enter passkey (press Enter for default key)'
+            self.info_log.text += '\nConnected to the server. Please enter passkey.'
+        except Exception as e:
+            self.info_log.text += f'\nFailed to connect: {e}'
+        if self.client_socket:
+            self.listen_for_messages()  # Start the listening thread once connected
+
+    def ensure_connection(self):
+        try:
+            # Attempt to send a small amount of data to check if socket is connected
+            self.client_socket.send(b'')
+        except OSError:
+            # Handle disconnection or inability to send data
+            print("Socket not connected, attempting to reconnect...")
+            try:
+                self.client_socket.connect((self.server_address, self.server_port))
+                print("Reconnected to server.")
+            except OSError as e:
+                print(f"Failed to reconnect: {e}")
+                return False
+        return True
+
+    def send_username(self):
+        if self.ensure_connection():
+            encrypted_username = self.cipher_suite.encrypt(self.username.encode('utf-8'))
+            try:
+                self.client_socket.send(encrypted_username)
+            except Exception as e:
+                print(f"Failed to send username: {e}")
+        else:
+            print("Not connected to server.")
+
+    def send_message(self, message):
         if not message:
+            print("No message to send.")
+            return
+        if not self.client_socket:
+            print("Not connected to server.")
             return
 
-        if not hasattr(self, 'client_socket'):
-            try:
-                self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.client_socket.connect((self.server_address, self.server_port))
-                threading.Thread(target=self.listen_for_messages, daemon=True).start()
-                # Corrected: Use self.info_log instead of self.log_view
-                self.info_log.text += '\nConnected to the server.'
-            except Exception as e:
-                # Corrected: Use self.info_log instead of self.log_view
-                self.info_log.text += f'\nFailed to connect: {e}'
-        else:
+        try:
             encrypted_message = self.cipher_suite.encrypt(message.encode('utf-8'))
             self.client_socket.send(encrypted_message)
+            print(f"Sent message: {message}")
+        except Exception as e:
+            print(f"Failed to send message: {e}")
 
-        self.passkey_input.text = ''  # Assuming you want to clear the passkey input, not message_input which is not defined
+    def listen_for_messages(self):
+        threading.Thread(target=self.receive_messages, daemon=True).start()
+
+    def receive_messages(self):
+        while True:
+            try:
+                encrypted_message = self.client_socket.recv(1024)
+                if not encrypted_message:
+                    break
+                message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
+                Clock.schedule_once(lambda dt: self.update_log(f"Friend: {message}"))
+            except Exception as e:
+                Clock.schedule_once(lambda dt: self.update_log("Connection lost with the server."))
+                break
 
     def update_log(self, message):
         # Schedule the update to the info_log text on the main thread
@@ -201,10 +287,13 @@ class ClientApp(App):
             try:
                 encrypted_message = self.client_socket.recv(1024)
                 message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
-                Clock.schedule_once(lambda dt: self.update_log(message))
+                Clock.schedule_once(lambda dt: self.update_log(f"Friend: {message}"))
             except Exception as e:
-                Clock.schedule_once(lambda dt: self.update_log("Lost connection to the server."))
+                Clock.schedule_once(lambda dt: self.update_log("Connection lost with the server."))
                 break
+
+    def update_log(self, message):
+        self.info_log.text += f'\n{message}'
 
 if __name__ == '__main__':
     ClientApp().run()
