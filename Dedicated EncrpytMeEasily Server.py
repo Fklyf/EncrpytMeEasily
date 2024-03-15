@@ -16,6 +16,7 @@ from kivy.core.window import Window
 from kivy.properties import ObjectProperty
 import socket
 import threading
+from threading import Lock
 import hashlib
 import base64
 from cryptography.fernet import Fernet
@@ -103,7 +104,7 @@ class ServerApp(App):
 
         # Header layout
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Server 0.104', size_hint_x=0.95)
+        title_label = Label(text='EncryptMeEasily Server 0.116', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
@@ -177,7 +178,7 @@ class ServerApp(App):
         self.info_log.size_hint_y = None  # This allows the label to grow
         content_layout = self.info_log.parent  # Get the content layout
         if content_layout:
-            content_layout.height = height + 20  # Add padding to height; adjust as needed
+            content_layout.height = height + 0  # Add padding to height; adjust as needed
 
     def update_separator(self, instance, value):
         if hasattr(self, 'separator'):
@@ -222,9 +223,10 @@ class ServerBackend:
         self.app = app
         self.server_socket = None
         self.is_active = False
-        self.clients = []
+        self.clients = []  # This will now store tuples of (client_socket, client_address)
         self.encryption_key = None
         self.cipher_suite = None
+        self.clients_lock = Lock()  # A lock for thread-safe operation on clients
 
     def generate_encryption_key(self, seed_numbers):
         seed_string = ''.join(map(str, seed_numbers))
@@ -257,41 +259,67 @@ class ServerBackend:
                 self.app.update_info_log(f"Connection established with {address}")
                 client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address), daemon=True)
                 client_thread.start()
-                self.clients.append(client_socket)
+                with self.clients_lock:  # Lock the clients list when modifying it
+                    self.clients.append((client_socket, address))  # Add as a tuple
             except Exception as e:
                 if self.is_active:
                     self.app.update_info_log(f"Server stopped listening: {e}")
                 break
 
     def handle_client(self, client_socket, address):
+        """Handle individual client connections."""
         try:
-            # Receive and decrypt the username
             encrypted_username = client_socket.recv(1024)
-            username = self.cipher_suite.decrypt(encrypted_username).decode('utf-8')
-            self.app.update_info_log(f"{username} connected from {address}.")
+            if encrypted_username:
+                username = self.cipher_suite.decrypt(encrypted_username).decode('utf-8')
+                self.app.update_info_log(f"{username} connected from {address}")
+            else:
+                raise Exception("Failed to receive username.")
 
-            # Continue with normal message handling
+            # After receiving the username, listen for messages from this client
             while True:
                 encrypted_message = client_socket.recv(1024)
                 if not encrypted_message:
-                    break
+                    break  # Client has disconnected
                 message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
-                self.app.update_info_log(f"Message from {username}: {message}")
-                # Broadcasting logic here...
+
+                # Log the message and broadcast it
+                self.app.update_info_log(f"{username}: {message}")
+                self.broadcast(f"{username}: {message}", sender_socket=client_socket)
         except Exception as e:
             self.app.update_info_log(f"Error with client {address}: {e}")
         finally:
+            with self.clients_lock:
+                self.clients.remove((client_socket, address))
             client_socket.close()
-            self.clients.remove(client_socket)
             self.app.update_info_log(f"{username} has disconnected.")
 
-    def broadcast(self, message):
-        for client in self.clients:
-            try:
-                client.send(message)
-            except Exception as e:
-                self.app.update_info_log(f"Broadcast error to {client.getpeername()}: {e}")
-                self.clients.remove(client)
+    def broadcast(self, message, sender_socket=None, include_sender=False):
+        """Send a message to all connected clients, and optionally include the sender."""
+        if not self.cipher_suite:
+            logging.warning("Cipher suite not initialized, cannot broadcast messages.")
+            return
+
+        with self.clients_lock:
+            clients_to_remove = []
+            for client_socket, client_info in self.clients:
+                try:
+                    # Conditionally include the sender based on the include_sender flag
+                    if client_socket is not sender_socket or include_sender:
+                        encrypted_message = self.cipher_suite.encrypt(message.encode('utf-8'))
+                        client_socket.send(encrypted_message)
+                except Exception as e:
+                    logging.error(f"Broadcast error to {client_info}: {e}", exc_info=True)
+                    clients_to_remove.append((client_socket, client_info))
+
+            # Close and remove faulty client connections
+            for client_socket, client_info in clients_to_remove:
+                try:
+                    client_socket.close()
+                except Exception as e:
+                    logging.error(f"Error closing socket for {client_info}: {e}", exc_info=True)
+                finally:
+                    self.clients.remove((client_socket, client_info))
 
     def stop_server(self):
         if self.is_active:
@@ -306,13 +334,15 @@ class ServerBackend:
             self.clients.clear()
 
     def kick_all_clients(self):
-        for client in self.clients[:]:  # Corrected here
-            try:
-                client.close()
-            except Exception as e:
-                self.app.update_info_log(f"Error disconnecting {client.getpeername()}: {e}")
-            self.clients.remove(client)
-        self.app.update_info_log("")
+        """Disconnect all clients and clear the client list."""
+        with self.clients_lock:
+            for client_socket, _ in list(self.clients):  # Safe iteration over a copy of the list
+                try:
+                    client_socket.close()
+                except Exception as e:
+                    self.app.update_info_log(f"Error disconnecting client: {e}")
+            self.clients.clear()
+        self.app.update_info_log("Welcome to EncrpytMeEasily")
 
 if __name__ == '__main__':
     ServerApp().run()
