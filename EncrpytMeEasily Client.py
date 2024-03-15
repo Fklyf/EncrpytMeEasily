@@ -99,33 +99,45 @@ class CustomScrollView(ScrollView):
         content_layout.height = total_height
         content_layout.size_hint_y = None  # Allow manual height adjustment
 
-
 class ClientApp(App):
     def __init__(self, **kwargs):
         super(ClientApp, self).__init__(**kwargs)
         self.setup_stage = 'username'  # First stage is to enter a username
         self.client_socket = None  # Initialize client_socket
+        self.username = ''
 
     def build(self):
         self.server_address = '127.0.0.1'
         self.server_port = 5000
         self.encryption_key = self.generate_encryption_key('1234567812345678')
         self.cipher_suite = Fernet(self.encryption_key)
-
         layout = BoxLayout(orientation='vertical')
 
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Client 0.104', size_hint_x=0.95)
+        title_label = Label(text='EncryptMeEasily Client 0.116', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
         header_layout.add_widget(close_button)
         layout.add_widget(header_layout)
 
+        # Ensure dynamic resizing for the rectangle background (if necessary)
+        command_input_layout = BoxLayout(size_hint_y=None, height=50, padding=[10])
+        self.update_background = lambda *args: command_input_layout.canvas.before.clear()
+
+        with command_input_layout.canvas.before:
+            self.update_background()
+            Color(rgba=(0.3, 0.3, 0.3, 1))
+            Rectangle(size=(Window.width, 50), pos=command_input_layout.pos)
+
+        Window.bind(on_resize=self.handle_window_resize)
+
         # Content layout for log
-        content_layout = BoxLayout(padding=[1], size_hint_y=None)
-        self.info_log = Label(size_hint_y=None, markup=True, halign="left",
-                              valign="bottom")  # Ensure this is initialized
+        content_layout = BoxLayout(padding=[10], size_hint_y=None)
+        self.info_log = Label(size_hint_y=None, markup=True, halign="left", valign="bottom")
+        self.info_log.bind(
+            width=lambda *x: self.info_log.setter('text_size')(self.info_log, (self.info_log.width, None)),
+            texture_size=lambda *x: self.update_content_layout_height(self.info_log.texture_size[1]))
         content_layout.add_widget(self.info_log)
 
         # ScrollView for logs
@@ -137,38 +149,60 @@ class ClientApp(App):
         command_input_layout = BoxLayout(size_hint_y=None, height=50, padding=[10])
         self.passkey_input = TextInput(multiline=False, hint_text='Please enter a username.')
         self.passkey_input.bind(on_text_validate=self.on_message_enter)
+        # Add below line to automatically focus the TextInput widget
+        Clock.schedule_once(lambda dt: self.set_focus(self.passkey_input), 1)
 
         # Add a reset button next to the TextInput
-        reset_button = Button(text='New', size_hint_x=None, height=49, width=99)
+        reset_button = Button(text='New ID', size_hint_x=None, height=49, width=99)
         reset_button.bind(on_press=self.restart_process)
         command_input_layout.add_widget(self.passkey_input)
         command_input_layout.add_widget(reset_button)  # Add the reset button to the layout
+
+        # Make sure to assign your CustomScrollView to an instance variable
+        self.scroll_view = log_scroll_view
+
+        # Program name
+        self.info_log.text = "Welcome to EncryptMeEasily"
 
         layout.add_widget(command_input_layout)
 
         return layout
 
+    def set_focus(self, widget):
+        widget.focus = True
+        # This could force the keyboard to open on devices that use a virtual keyboard
+        if widget.focus and hasattr(widget, 'request_keyboard'):
+            widget.request_keyboard()
+
+    def handle_window_resize(self, instance, width, height):
+        # Handle resizing logic here, for example:
+        self.update_background()
+
+    def update_content_layout_height(self, height):
+        """Update the height of the content layout to ensure it can scroll."""
+        self.info_log.height = height  # Update the label height
+        self.info_log.size_hint_y = None  # This allows the label to grow
+        content_layout = self.info_log.parent  # Get the content layout
+        if content_layout:
+            content_layout.height = height + 20  # Add padding to height; adjust as needed
+
+    def update_separator(self, instance, value):
+        if hasattr(self, 'separator'):
+            self.separator.pos = (instance.x, instance.y)
+            self.separator.size = (instance.width, 1)
+
     def restart_process(self, instance):
+        # Clear the log and display a welcome message
+        self.info_log.text = "Welcome to EncryptMeEasily"
         if self.client_socket:
             try:
-                self.client_socket.close()  # Attempt to close the socket connection if it exists
+                self.client_socket.close()
             except Exception as e:
                 print(f"Error closing socket: {e}")
         self.client_socket = None
         self.setup_stage = 'username'
         self.passkey_input.text = ''  # Clear the input box
-        self.passkey_input.hint_text = 'Please enter a username.'  # Reset hint text
-        # Reset other UI elements as necessary, e.g., clear logs or messages
-
-    def update_content_layout_height(self, *args):
-        if not hasattr(self, 'content_layout'):
-            return  # Make sure the content_layout attribute exists
-
-        # Assuming 'content_layout' is the layout containing 'info_log'
-        total_height = sum(child.height + self.content_layout.spacing for child in self.content_layout.children)
-        self.content_layout.height = max(self.root.height,
-                                         total_height)  # Ensure minimum height is the ScrollView's height
-        self.content_layout.size_hint_y = None  # Disable size_hint to manually adjust height
+        self.passkey_input.hint_text = 'Please enter a username.'
 
     def handle_window_resize(self, instance, width, height):
         # Handle resizing logic here, for example:
@@ -220,8 +254,6 @@ class ClientApp(App):
             self.info_log.text += '\nConnected to the server. Please enter passkey.'
         except Exception as e:
             self.info_log.text += f'\nFailed to connect: {e}'
-        if self.client_socket:
-            self.listen_for_messages()  # Start the listening thread once connected
 
     def ensure_connection(self):
         try:
@@ -249,51 +281,53 @@ class ClientApp(App):
             print("Not connected to server.")
 
     def send_message(self, message):
-        if not message:
-            print("No message to send.")
-            return
-        if not self.client_socket:
-            print("Not connected to server.")
-            return
-
-        try:
+        if self.ensure_connection():
             encrypted_message = self.cipher_suite.encrypt(message.encode('utf-8'))
-            self.client_socket.send(encrypted_message)
-            print(f"Sent message: {message}")
+            try:
+                self.client_socket.send(encrypted_message)
+                # Update the UI with the client's own message right after sending
+                self.display_message(f"You: {message}")
+            except Exception as e:
+                print(f"Failed to send message: {e}")
+
+    def connect_to_server(self):
+        try:
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((self.server_address, self.server_port))
+            self.setup_stage = 'passkey'
+            self.passkey_input.hint_text = 'Enter passkey (press Enter for default key)'
+            self.info_log.text += '\nConnected to the server. Please enter passkey.'
+            # Start listening for messages in a new thread
+            threading.Thread(target=self.listen_for_messages, daemon=True).start()
         except Exception as e:
-            print(f"Failed to send message: {e}")
+            self.info_log.text += f'\nFailed to connect: {e}'
 
     def listen_for_messages(self):
-        threading.Thread(target=self.receive_messages, daemon=True).start()
-
-    def receive_messages(self):
-        while True:
-            try:
+        try:
+            while True:
                 encrypted_message = self.client_socket.recv(1024)
-                if not encrypted_message:
+                if encrypted_message:
+                    message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
+                    self.display_message(message)
+                else:
+                    # No more messages, possibly disconnected
+                    self.display_message("Connection lost with the server.")
                     break
-                message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
-                Clock.schedule_once(lambda dt: self.update_log(f"Friend: {message}"))
-            except Exception as e:
-                Clock.schedule_once(lambda dt: self.update_log("Connection lost with the server."))
-                break
+        except Exception as e:
+            self.display_message(f"Error: {e}")
+            self.client_socket.close()
+
+    @mainthread
+    def display_message(self, message):
+        # This method updates the UI, ensuring that it's done on the main thread
+        self.info_log.text += f"\n{message}"
 
     def update_log(self, message):
-        # Schedule the update to the info_log text on the main thread
-        Clock.schedule_once(lambda dt: setattr(self.info_log, 'text', self.info_log.text + f'\n{message}'))
-
-    def listen_for_messages(self):
-        while True:
-            try:
-                encrypted_message = self.client_socket.recv(1024)
-                message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
-                Clock.schedule_once(lambda dt: self.update_log(f"Friend: {message}"))
-            except Exception as e:
-                Clock.schedule_once(lambda dt: self.update_log("Connection lost with the server."))
-                break
-
-    def update_log(self, message):
-        self.info_log.text += f'\n{message}'
+        """Safely update the UI with a new message."""
+        # Assuming `self.info_log` is the Label widget you want to update
+        self.info_log.text += f"\n{message}"
+        # Scroll to the bottom of the label
+        self.root.ids.scroll_view.scroll_to(self.info_log)
 
 if __name__ == '__main__':
     ClientApp().run()
