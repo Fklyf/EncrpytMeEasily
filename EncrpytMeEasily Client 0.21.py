@@ -24,15 +24,15 @@ from kivy.metrics import dp
 from kivy.config import Config
 Config.set('kivy', 'keyboard_mode', 'systemanddock')
 
+## Client ##
+
 kivy.require('2.0.0')
 
 class NoMomentumScrollEffect(ScrollEffect):
     def update_velocity(self, dt):
         self.velocity = 0
 
-
 Factory.register('NoMomentumScrollEffect', cls=NoMomentumScrollEffect)
-
 
 class CustomScrollView(ScrollView):
     def __init__(self, **kwargs):
@@ -114,7 +114,7 @@ class ClientApp(App):
         layout = BoxLayout(orientation='vertical')
 
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Client 0.116', size_hint_x=0.95)
+        title_label = Label(text='EncryptMeEasily Client 0.21', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
@@ -244,16 +244,29 @@ class ClientApp(App):
 
         self.passkey_input.text = ''  # Clear the text input for next input
 
-    def connect_to_server(self):
-        try:
-            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.connect((self.server_address, self.server_port))
-            self.setup_stage = 'passkey'
-            # Corrected from self.input_field to self.passkey_input
-            self.passkey_input.hint_text = 'Enter passkey (press Enter for default key)'
-            self.info_log.text += '\nConnected to the server. Please enter passkey.'
-        except Exception as e:
-            self.info_log.text += f'\nFailed to connect: {e}'
+    def connect_to_server(self, retry_count=2, retry_delay=3):
+        """Attempt to connect to the server with retries.
+
+        Args:
+            retry_count (int): Number of connection attempts.
+            retry_delay (int): Delay between retries in seconds.
+        """
+        attempt = 0
+        while attempt < retry_count:
+            try:
+                self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.client_socket.connect((self.server_address, self.server_port))
+                self.setup_stage = 'passkey'
+                self.passkey_input.hint_text = 'Enter passkey (press Enter for default key)'
+                self.info_log.text += '\nConnected to the server. Please enter passkey.'
+                threading.Thread(target=self.listen_for_messages, daemon=True).start()
+                return  # Connection successful
+            except Exception as e:
+                attempt += 1
+                self.info_log.text += f'\nFailed to connect: {e}. Retrying {attempt}/{retry_count}...'
+                time.sleep(retry_delay)
+        # After retries
+        self.info_log.text += '\nFailed to connect to the server after several attempts. Please check the server and try again.'
 
     def ensure_connection(self):
         try:
@@ -303,6 +316,7 @@ class ClientApp(App):
             self.info_log.text += f'\nFailed to connect: {e}'
 
     def listen_for_messages(self):
+        """Listen for messages from the server."""
         try:
             while True:
                 encrypted_message = self.client_socket.recv(1024)
@@ -310,12 +324,13 @@ class ClientApp(App):
                     message = self.cipher_suite.decrypt(encrypted_message).decode('utf-8')
                     self.display_message(message)
                 else:
-                    # No more messages, possibly disconnected
-                    self.display_message("Connection lost with the server.")
-                    break
+                    # Connection was closed by the server.
+                    raise Exception("Connection lost with the server.")
         except Exception as e:
             self.display_message(f"Error: {e}")
             self.client_socket.close()
+            self.display_message("Attempting to reconnect...")
+            self.connect_to_server()
 
     @mainthread
     def display_message(self, message):
