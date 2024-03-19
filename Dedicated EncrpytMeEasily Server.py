@@ -23,6 +23,8 @@ from cryptography.fernet import Fernet
 from kivy.animation import Animation
 from kivy.metrics import dp
 
+## Server ##
+
 kivy.require('2.0.0')
 
 class NoMomentumScrollEffect(ScrollEffect):
@@ -91,11 +93,11 @@ class CustomScrollView(ScrollView):
             del self.last_touch_y  # Remove the attribute when touch ends
         return super(CustomScrollView, self).on_touch_up(touch)
 
-def update_content_layout_height(self):
-    content_layout = self.ids.content_layout  # Assuming you have given an id to your content layout in kv
-    total_height = sum(child.height + content_layout.spacing for child in content_layout.children)
-    content_layout.height = total_height
-    content_layout.size_hint_y = None  # Allow manual height adjustment
+    def update_content_layout_height(self):
+        content_layout = self.ids.content_layout  # Assuming you have given an id to your content layout in kv
+        total_height = sum(child.height + content_layout.spacing for child in content_layout.children)
+        content_layout.height = total_height
+        content_layout.size_hint_y = None  # Allow manual height adjustment
 
 class ServerApp(App):
     def build(self):
@@ -104,7 +106,7 @@ class ServerApp(App):
 
         # Header layout
         header_layout = BoxLayout(size_hint_y=None, height=50)
-        title_label = Label(text='EncryptMeEasily Server 0.116', size_hint_x=0.95)
+        title_label = Label(text='EncryptMeEasily Server 0.21', size_hint_x=0.95)
         close_button = Button(text='X', size_hint_x=None, width=50)
         close_button.bind(on_press=lambda x: self.stop())
         header_layout.add_widget(title_label)
